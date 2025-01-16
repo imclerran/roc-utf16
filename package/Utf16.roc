@@ -4,17 +4,17 @@ Utf8 : List U8
 Utf16 : List U16
 
 str_to_utf16 : Str -> Result Utf16 [BadUtf8]_
-str_to_utf16 = \str -> str |> Str.to_utf8 |> utf8_to_utf16
+str_to_utf16 = |str| str |> Str.to_utf8 |> utf8_to_utf16
 
 utf8_to_utf16 : Utf8 -> Result Utf16 [BadUtf8]_
-utf8_to_utf16 = \utf8 ->
+utf8_to_utf16 = |utf8|
     max_code_units = List.len(utf8)
-    get_byte = \index -> List.get(utf8, index)
+    get_byte = |index| List.get(utf8, index)
 
     converted = List.walk_with_index_until(
         utf8,
         { utf16: List.with_capacity(max_code_units), skip_bytes: 0, err: None },
-        \state, byte, index ->
+        |state, byte, index|
             if state.skip_bytes > 0 then
                 Continue { state & skip_bytes: state.skip_bytes - 1 }
             else if Num.bitwise_and(byte, 0xF0) == 0xF0 then
