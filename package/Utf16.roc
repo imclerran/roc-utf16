@@ -3,7 +3,7 @@ module [utf8_to_utf16, str_to_utf16, utf16_to_utf8, utf16_to_str]
 Utf8 : List U8
 Utf16 : List U16
 
-str_to_utf16 : Str -> Result Utf16 [BadUtf8]_
+str_to_utf16 : Str -> Result Utf16 [BadUtf8]
 str_to_utf16 = |str| str |> Str.to_utf8 |> utf8_to_utf16
 
 utf8_to_utf16 : Utf8 -> Result Utf16 [BadUtf8]
