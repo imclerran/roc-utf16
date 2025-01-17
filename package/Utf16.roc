@@ -3,13 +3,33 @@ module [utf8_to_utf16, str_to_utf16, utf16_to_utf8, utf16_to_str]
 Utf8 : List U8
 Utf16 : List U16
 
-str_to_utf16 : Str -> Result Utf16 [BadUtf8]
+Utf8ByteProblem : [
+    InvalidStartByte,
+    UnexpectedEndOfSequence,
+    ExpectedContinuation,
+    OverlongEncoding,
+    CodepointTooLarge,
+    EncodesSurrogateHalf,
+]
+
+Utf8Problem : { index : U64, problem : Utf8ByteProblem }
+
+str_to_utf16 : Str -> Result Utf16 [BadUtf8 Utf8Problem]_
 str_to_utf16 = |str| str |> Str.to_utf8 |> utf8_to_utf16
 
-utf8_to_utf16 : Utf8 -> Result Utf16 [BadUtf8]
+utf8_to_utf16 : Utf8 -> Result Utf16 [BadUtf8 Utf8Problem]_
 utf8_to_utf16 = |utf8|
     max_code_units = List.len(utf8)
     get_byte = |index| List.get(utf8, index)
+    valid_continuation_byte = |byte| Num.bitwise_and(byte, 0x80) == 0x80
+    valid_continuations = |bytes| List.all(bytes, valid_continuation_byte)
+    invalid_index_offset = 
+        |bytes| 
+            bytes
+            |> List.map_with_index(|b, i| if valid_continuation_byte(b) then Ok(i) else Err(i))
+            |> List.keep_errs |n| n
+            |> List.first
+            |> Result.with_default 0
 
     converted = List.walk_with_index_until(
         utf8,
@@ -18,51 +38,70 @@ utf8_to_utf16 = |utf8|
             if state.skip_bytes > 0 then
                 Continue { state & skip_bytes: state.skip_bytes - 1 }
             else if Num.bitwise_and(byte, 0xF0) == 0xF0 then
-                # 4 byte codepoint
+                # 4 byte codedpoint
                 when (get_byte(index + 1), get_byte(index + 2), get_byte(index + 3)) is
+                    (Ok byte2, Ok byte3, Ok byte4) if !valid_continuations([byte2, byte3, byte4]) ->
+                        bad_index = index + invalid_index_offset([byte2, byte3, byte4])
+                        Break { state & err: BadUtf8({ index: bad_index, problem: ExpectedContinuation }) }
                     (Ok byte2, Ok byte3, Ok byte4) ->
+                        if byte == 0xF0 && Num.bitwise_xor(byte2, 0x80) < 0x10 then
+                            return Break { state & err: BadUtf8({ index: index + 1, problem: OverlongEncoding }) }
+                            else
                         codepoint =
                             (Num.bitwise_and(byte, 0x07) |> Num.to_u32 |> Num.shift_left_by(18))
                             |> Num.bitwise_or(Num.bitwise_and(byte2, 0x3F) |> Num.to_u32 |> Num.shift_left_by(12))
                             |> Num.bitwise_or(Num.bitwise_and(byte3, 0x3F) |> Num.to_u32 |> Num.shift_left_by(6))
                             |> Num.bitwise_or(Num.bitwise_and(byte4, 0x3F) |> Num.to_u32)
 
-                        offset_codepoint = codepoint - 0x10000
-                        high_surrogate = Num.to_u16(0xD800 + Num.shift_right_zf_by(offset_codepoint, 10))
-                        low_surrogate = Num.to_u16(0xDC00 + Num.bitwise_and(offset_codepoint, 0x3FF))
-                        Continue { state & utf16: List.join([state.utf16, [high_surrogate, low_surrogate]]), skip_bytes: 3 }
+                        if codepoint > 0x10FFFF then
+                            Break { state & err: BadUtf8({ index, problem: CodepointTooLarge })}
+                        else if codepoint >= 0xD800 && codepoint <= 0xDFFF then
+                            Break { state & err: BadUtf8({ index, problem: EncodesSurrogateHalf })}
+                        else
+                            offset_codepoint = codepoint - 0x10000
+                            high_surrogate = Num.to_u16(0xD800 + Num.shift_right_zf_by(offset_codepoint, 10))
+                            low_surrogate = Num.to_u16(0xDC00 + Num.bitwise_and(offset_codepoint, 0x3FF))
+                            Continue { state & utf16: List.join([state.utf16, [high_surrogate, low_surrogate]]), skip_bytes: 3 }
 
-                    _ -> Break { state & err: BadUtf8 }
+                    _ -> Break { state & err: BadUtf8({ index, problem: UnexpectedEndOfSequence }) }
             else if Num.bitwise_and(byte, 0xE0) == 0xE0 then
                 # 3 byte codepoint
                 when (get_byte(index + 1), get_byte(index + 2)) is
+                    (Ok byte2, Ok byte3) if !valid_continuations([byte2, byte3]) ->
+                        bad_index = index + invalid_index_offset([byte2, byte3])
+                        Break { state & err: BadUtf8({ index: bad_index, problem: ExpectedContinuation }) }
                     (Ok byte2, Ok byte3) ->
+                        if byte == 0xE0 && Num.bitwise_xor(byte2, 0x80) < 0x20 then
+                            return Break { state & err: BadUtf8({ index: index + 1, problem: OverlongEncoding }) }
+                            else
                         code_unit =
                             (Num.bitwise_and(byte, 0x0F) |> Num.to_u16 |> Num.shift_left_by(12))
                             |> Num.bitwise_or(Num.bitwise_and(byte2, 0x3F) |> Num.to_u16 |> Num.shift_left_by(6))
                             |> Num.bitwise_or(Num.bitwise_and(byte3, 0x3F) |> Num.to_u16)
                         Continue { state & utf16: List.append(state.utf16, code_unit), skip_bytes: 2 }
 
-                    _ -> Break { state & err: BadUtf8 }
+                    _ -> Break { state & err: BadUtf8({ index, problem: UnexpectedEndOfSequence }) }
             else if Num.bitwise_and(byte, 0xC0) == 0xC0 then
                 # 2 byte codepoint
                 when get_byte(index + 1) is
+                    Ok byte2 if !valid_continuation_byte(byte2) ->
+                        Break { state & err: BadUtf8({ index: index + 1, problem: ExpectedContinuation }) }
                     Ok byte2 ->
                         code_unit =
                             (Num.bitwise_and(byte, 0x1F) |> Num.to_u16 |> Num.shift_left_by(6))
                             |> Num.bitwise_or(Num.bitwise_and(byte2, 0x3F) |> Num.to_u16)
                         Continue { state & utf16: List.append(state.utf16, code_unit), skip_bytes: 1 }
 
-                    Err _ -> Break { state & err: BadUtf8 }
+                    Err _ -> Break { state & err: BadUtf8({ index, problem: UnexpectedEndOfSequence }) }
             else if byte < 0x80 then
                 # 1 byte codepoint
                 Continue { state & utf16: List.append(state.utf16, Num.to_u16(byte)) }
             else
-                Break { state & err: BadUtf8 },
+                Break { state & err: BadUtf8({ index, problem: InvalidStartByte }) },
     )
     when converted.err is
         None -> converted.utf16 |> List.release_excess_capacity |> Ok
-        _ -> Err BadUtf8
+        err -> Err err
 
 utf16_to_str : Utf16 -> Result Str [BadUtf16]
 utf16_to_str = |utf16|
@@ -176,6 +215,26 @@ expect
     utf16 = utf8_to_utf16(utf8) |> Result.with_default []
 
     (utf16 == expected) && (utf16 |> utf16_to_utf8 == Ok(utf8))
+
+expect
+    # only 11 bits used in 3 byte codepoint
+    utf8_okay = [0b1110_0000, 0b1010_0000, 0b1000_0000]
+    utf8_overlong = [0b1110_0000, 0b1001_1111, 0b1011_1111]
+    expected_err = Err(BadUtf8({ index: 1, problem: OverlongEncoding }))
+    utf16_okay = utf8_to_utf16(utf8_okay) |> Result.map_ok(|_| Encoded)
+    utf16_err = utf8_to_utf16(utf8_overlong)
+
+    (utf16_okay == Ok Encoded) && (utf16_err == expected_err)
+
+expect
+    # only 16 bits used in 4 byte codepoint
+    utf8_okay = [0b1111_0000, 0b1001_0000, 0b1000_0000, 0b1000_0000]
+    utf8_overlong = [0b1111_0000, 0b1000_1111, 0b1011_1111, 0b1011_1111]
+    expected_err = Err(BadUtf8({ index: 1, problem: OverlongEncoding }))
+    utf16_okay = utf8_to_utf16(utf8_okay) |> Result.map_ok(|_| Encoded)
+    utf16_err = utf8_to_utf16(utf8_overlong)
+    
+    (utf16_okay == Ok Encoded) && (utf16_err == expected_err)
 
 expect
     "🔥" |> str_to_utf16 |> Result.try(utf16_to_str) == Ok("🔥")
