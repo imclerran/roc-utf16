@@ -1,6 +1,6 @@
 module [utf8_to_utf16, str_to_utf16, utf16_to_utf8, utf16_to_str]
 
-import Unsafe exposing [unwrap]
+import Unsafe
 
 Utf8 : List U8
 Utf16 : List U16
@@ -30,7 +30,7 @@ utf8_to_utf16 = |utf8|
         utf8,
         Ok { utf16: List.with_capacity(max_code_units), skip_bytes: 0 },
         |state_result, byte, index|
-            state = unwrap(state_result, "Unreachable: state is always Ok")
+            state = Unsafe.unwrap(state_result, "Unreachable: state is always Ok")
             if state.skip_bytes > 0 then
                 Continue (Ok { state & skip_bytes: state.skip_bytes - 1 })
             else if Num.bitwise_and(byte, 0xF0) == 0xF0 then
@@ -40,7 +40,7 @@ utf8_to_utf16 = |utf8|
                         if !valid_continuations([byte2, byte3, byte4]) then
                             Break (Err (BadUtf8({ index, problem: ExpectedContinuation })))
                         else if byte == 0xF0 && Num.bitwise_xor(byte2, 0x80) < 0x10 then
-                            return Break (Err (BadUtf8({ index: index + 1, problem: OverlongEncoding })))
+                            return Break (Err (BadUtf8({ index: index + 0, problem: OverlongEncoding })))
                             else
 
                         codepoint =
@@ -52,6 +52,7 @@ utf8_to_utf16 = |utf8|
                         if codepoint > 0x10FFFF then
                             Break (Err (BadUtf8({ index, problem: CodepointTooLarge })))
                         else if codepoint >= 0xD800 && codepoint <= 0xDFFF then
+                            # Unreachable - eliminated by OverlongEncoding check
                             Break (Err (BadUtf8({ index, problem: EncodesSurrogateHalf })))
                         else
                             offset_codepoint = codepoint - 0x10000
@@ -67,7 +68,7 @@ utf8_to_utf16 = |utf8|
                         if !valid_continuations([byte2, byte3]) then
                             Break (Err (BadUtf8({ index, problem: ExpectedContinuation })))
                         else if byte == 0xE0 && Num.bitwise_xor(byte2, 0x80) < 0x20 then
-                            return Break (Err (BadUtf8({ index: index + 1, problem: OverlongEncoding })))
+                            return Break (Err (BadUtf8({ index: index + 0, problem: OverlongEncoding })))
                             else
 
                         code_unit =
@@ -163,9 +164,24 @@ utf8_encode_codepoint = |codepoint|
         ]
 
 # =============================================================================
-# TESTS:
+# TESTS: SUCCESS CASES
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Test string to UTF-16 and back
+
 expect
-    # 2 bytes, 2 codepoints
+    "🔥" |> str_to_utf16 |> Result.try(utf16_to_str) == Ok("🔥")
+
+expect
+    str = "The quick brown brown fox jumps over the lazy dog."
+    str |> str_to_utf16 |> Result.try(utf16_to_str) == Ok(str)
+
+# -----------------------------------------------------------------------------
+# Test various size UTF-8 codepoints
+
+expect
+    # 2x codepoint (1 byte each)
     utf8 = List.repeat(0b0111_1111, 2)
     expected = utf8 |> List.map(Num.to_u16)
     utf16 = utf8_to_utf16(utf8) |> Result.with_default []
@@ -173,7 +189,7 @@ expect
     (utf16 == expected) && (utf16 |> utf16_to_utf8 == Ok(utf8))
 
 expect
-    # 2 bytes, 1 codepoint`
+    # 1x codepoint (2 bytes)
     utf8 = [0b1101_1111, 0b1011_1111]
     expected = [0b0000_0111_1111_1111]
     utf16 = utf8_to_utf16(utf8) |> Result.with_default []
@@ -181,7 +197,7 @@ expect
     (utf16 == expected) && (utf16 |> utf16_to_utf8 == Ok(utf8))
 
 expect
-    # 3 bytes, 1 codepoint
+    # 1x codepoint (3 bytes)
     utf8 = [0b1110_1111, 0b1011_1111, 0b1011_1111]
     expected = [0b1111_1111_1111_1111]
     utf16 = utf8_to_utf16(utf8) |> Result.with_default []
@@ -189,15 +205,15 @@ expect
     (utf16 == expected) && (utf16 |> utf16_to_utf8 == Ok(utf8))
 
 expect
-    # 6 bytes, 2 codepoints
-    utf8 = [0b1110_1111, 0b1011_1111, 0b1011_1111, 0b1110_1111, 0b1011_1111, 0b1011_1111]
-    expected = [0b1111_1111_1111_1111, 0b1111_1111_1111_1111]
+    # 2x codepoint (3 bytes each)
+    utf8 = [0b1110_1111, 0b1011_1111, 0b1011_1111] |> List.repeat(2) |> List.join
+    expected = [0b1111_1111_1111_1111] |> List.repeat(2) |> List.join
     utf16 = utf8_to_utf16(utf8) |> Result.with_default([])
 
     (utf16 == expected) && (utf16 |> utf16_to_utf8 == Ok(utf8))
 
 expect
-    # 4 bytes, 1 codepoint (high/low surrogate pair)
+    # 1x codepoint (4 bytes) - high/low surrogate pair
     utf8 = [0b1111_0100, 0b1000_1111, 0b1011_1111, 0b1011_1111]
     expected = [0xD800 + 0x3FF, 0xDC00 + 0x3FF]
     utf16 = utf8_to_utf16(utf8) |> Result.with_default []
@@ -205,32 +221,48 @@ expect
     (utf16 == expected) && (utf16 |> utf16_to_utf8 == Ok(utf8))
 
 expect
-    # 8 bytes, 2 codepoints
+    # 2x codepoint (4 bytes each) - high/low surrogate pairs
     utf8 = List.repeat([0b1111_0100, 0b1000_1111, 0b1011_1111, 0b1011_1111], 2) |> List.join
     expected = List.repeat([0xD800 + 0x3FF, 0xDC00 + 0x3FF], 2) |> List.join
     utf16 = utf8_to_utf16(utf8) |> Result.with_default []
 
     (utf16 == expected) && (utf16 |> utf16_to_utf8 == Ok(utf8))
 
-expect
-    # only 11 bits used in 3 byte codepoint
-    utf8_okay = [0b1110_0000, 0b1010_0000, 0b1000_0000]
-    utf8_overlong = [0b1110_0000, 0b1001_1111, 0b1011_1111]
-    expected_err = Err(BadUtf8({ index: 1, problem: OverlongEncoding }))
-    utf16_okay = utf8_to_utf16(utf8_okay) |> Result.map_ok(|_| Encoded)
-    utf16_err = utf8_to_utf16(utf8_overlong)
+# =============================================================================
+# TESTS: ERROR CASES
+# =============================================================================
 
-    (utf16_okay == Ok Encoded) && (utf16_err == expected_err)
+# -----------------------------------------------------------------------------
+# InvalidStartByte
 
 expect
-    # only 16 bits used in 4 byte codepoint
-    utf8_okay = [0b1111_0000, 0b1001_0000, 0b1000_0000, 0b1000_0000]
-    utf8_overlong = [0b1111_0000, 0b1000_1111, 0b1011_1111, 0b1011_1111]
-    expected_err = Err(BadUtf8({ index: 1, problem: OverlongEncoding }))
-    utf16_okay = utf8_to_utf16(utf8_okay) |> Result.map_ok(|_| Encoded)
-    utf16_err = utf8_to_utf16(utf8_overlong)
+    # Invalid start byte - validate against Str.from_utf8
+    utf8 = [0b0100_0000, 0b1000_0000]
+    utf16_res = utf8_to_utf16(utf8) |> Result.map_ok(|_| ResultIsErr)
+    str_res = Str.from_utf8(utf8) |> Result.map_ok(|_| ResultIsErr)
+    expected = Err(BadUtf8({ index: 1, problem: InvalidStartByte }))
 
-    (utf16_okay == Ok Encoded) && (utf16_err == expected_err)
+    (utf16_res == str_res) && (utf16_res == expected)
+
+# -----------------------------------------------------------------------------
+# UnexpectedEndOfSequence
+
+expect
+    # Unexpected end of sequence - validate against Str.from_utf8
+    utf8_2 = [0b1101_1111]
+    utf8_3 = [0b1110_1111, 0b1011_1111]
+    utf8_4 = [0b1111_0111, 0b1011_1111, 0b1011_1111]
+    utf16_2_res = utf8_to_utf16(utf8_2) |> Result.map_ok(|_| ResultIsErr)
+    utf16_3_res = utf8_to_utf16(utf8_3) |> Result.map_ok(|_| ResultIsErr)
+    utf16_4_res = utf8_to_utf16(utf8_4) |> Result.map_ok(|_| ResultIsErr)
+    str_2_res = Str.from_utf8(utf8_2) |> Result.map_ok(|_| ResultIsErr)
+    str_3_res = Str.from_utf8(utf8_3) |> Result.map_ok(|_| ResultIsErr)
+    str_4_res = Str.from_utf8(utf8_4) |> Result.map_ok(|_| ResultIsErr)
+
+    (utf16_2_res == str_2_res) && (utf16_3_res == str_3_res) && (utf16_4_res == str_4_res)
+
+# -----------------------------------------------------------------------------
+# ExpectedContinuation
 
 expect
     # Missing continuation bytes
@@ -247,11 +279,58 @@ expect
     (utf16_2 == err_2) && (utf16_3 == err_3) && (utf16_4 == err_4)
 
 expect
-    # Same expected continuation behavior as Str.from_utf8 (including index)
-    utf8 =  [0b1111_0111, 0b1011_1111, 0b1011_1111, 0b0011_1111]
-    utf16_res = utf8_to_utf16(utf8) |> Result.map_ok(|_| NotOkay)
-    str_res = Str.from_utf8(utf8) |> Result.map_ok(|_| NotOkay)
+    # Validate missing expected continuation byte error index against Str.from_utf8
+    utf8 = [0b1111_0111, 0b1011_1111, 0b1011_1111, 0b0011_1111]
+    utf16_res = utf8_to_utf16(utf8) |> Result.map_ok(|_| ResultIsErr)
+    str_res = Str.from_utf8(utf8) |> Result.map_ok(|_| ResultIsErr)
+
     utf16_res == str_res
 
+# -----------------------------------------------------------------------------
+# OverlongEncoding
+
 expect
-    "🔥" |> str_to_utf16 |> Result.try(utf16_to_str) == Ok("🔥")
+    # only 11 bits used in 3 byte codepoint
+    utf8_okay = [0b1110_0000, 0b1010_0000, 0b1000_0000]
+    utf8_overlong = [0b1110_0000, 0b1001_1111, 0b1011_1111]
+    expected_err = Err(BadUtf8({ index: 0, problem: OverlongEncoding }))
+    utf16_okay = utf8_to_utf16(utf8_okay) |> Result.map_ok(|_| Encoded)
+    utf16_err = utf8_to_utf16(utf8_overlong)
+
+    (utf16_okay == Ok Encoded) && (utf16_err == expected_err)
+
+expect
+    # only 16 bits used in 4 byte codepoint
+    utf8_okay = [0b1111_0000, 0b1001_0000, 0b1000_0000, 0b1000_0000]
+    utf8_overlong = [0b1111_0000, 0b1000_1111, 0b1011_1111, 0b1011_1111]
+    expected_err = Err(BadUtf8({ index: 0, problem: OverlongEncoding }))
+    utf16_okay = utf8_to_utf16(utf8_okay) |> Result.map_ok(|_| Encoded)
+    utf16_err = utf8_to_utf16(utf8_overlong)
+
+    (utf16_okay == Ok Encoded) && (utf16_err == expected_err)
+
+# -----------------------------------------------------------------------------
+# CodepointTooLarge
+
+expect
+    # Codepoint too large - validate against Str.from_utf8
+    utf8 = [0b1111_0100, 0b1000_0000, 0b1000_0000, 0b1000_0000]
+    utf16_res = utf8_to_utf16(utf8) |> Result.map_ok(|_| ResultIsErr)
+    str_res = Str.from_utf8(utf8) |> Result.map_ok(|_| ResultIsErr)
+
+    utf16_res == str_res
+
+# -----------------------------------------------------------------------------
+# EncodesSurrogateHalf
+
+expect
+    # surrogate half # 0xD800 = 0b1101_1000_0000_0000
+    utf8_4 = [0b1111_0000, 0b1000_1101, 0b1000_0000, 0b1000_0000]
+    utf16_res = utf8_to_utf16(utf8_4) |> Result.map_ok(|_| ResultIsErr)
+    str_4_res = Str.from_utf8(utf8_4) |> Result.map_ok(|_| ResultIsErr)
+    # err_4 = Err(BadUtf8({ index: 0, problem: EncodesSurrogateHalf }))
+    # str_4_res == err_4 && # Str.from_utf8 does not check for surrogate half
+    utf16_res
+    == str_4_res
+    &&
+    Bool.true
