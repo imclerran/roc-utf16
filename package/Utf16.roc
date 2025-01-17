@@ -24,15 +24,7 @@ utf8_to_utf16 : Utf8 -> Result Utf16 [BadUtf8 Utf8Problem]
 utf8_to_utf16 = |utf8|
     max_code_units = List.len(utf8)
     get_byte = |index| List.get(utf8, index)
-    valid_continuation_byte = |byte| Num.bitwise_and(byte, 0x80) == 0x80
-    valid_continuations = |bytes| List.all(bytes, valid_continuation_byte)
-    # invalid_index_offset =
-    #     |bytes|
-    #         bytes
-    #         |> List.map_with_index(|b, i| if valid_continuation_byte(b) then Ok(i) else Err(i))
-    #         |> List.keep_errs |n| n
-    #         |> List.first
-    #         |> Result.with_default 0
+    valid_continuations = |bytes| List.all(bytes, |b| Num.bitwise_and(b, 0x80) == 0x80)
 
     converted = List.walk_with_index_until(
         utf8,
@@ -46,7 +38,6 @@ utf8_to_utf16 = |utf8|
                 when (get_byte(index + 1), get_byte(index + 2), get_byte(index + 3)) is
                     (Ok byte2, Ok byte3, Ok byte4) ->
                         if !valid_continuations([byte2, byte3, byte4]) then
-                            # bad_index = index + invalid_index_offset([byte2, byte3, byte4])
                             Break (Err (BadUtf8({ index, problem: ExpectedContinuation })))
                         else if byte == 0xF0 && Num.bitwise_xor(byte2, 0x80) < 0x10 then
                             return Break (Err (BadUtf8({ index: index + 1, problem: OverlongEncoding })))
@@ -74,7 +65,6 @@ utf8_to_utf16 = |utf8|
                 when (get_byte(index + 1), get_byte(index + 2)) is
                     (Ok byte2, Ok byte3) ->
                         if !valid_continuations([byte2, byte3]) then
-                            # bad_index = index + invalid_index_offset([byte2, byte3])
                             Break (Err (BadUtf8({ index, problem: ExpectedContinuation })))
                         else if byte == 0xE0 && Num.bitwise_xor(byte2, 0x80) < 0x20 then
                             return Break (Err (BadUtf8({ index: index + 1, problem: OverlongEncoding })))
@@ -90,7 +80,7 @@ utf8_to_utf16 = |utf8|
             else if Num.bitwise_and(byte, 0xC0) == 0xC0 then
                 # 2 byte codepoint
                 when get_byte(index + 1) is
-                    Ok byte2 if !valid_continuation_byte(byte2) ->
+                    Ok byte2 if !valid_continuations([byte2]) ->
                         Break (Err (BadUtf8({ index, problem: ExpectedContinuation })))
 
                     Ok byte2 ->
@@ -247,35 +237,21 @@ expect
     utf8_2 = [0b1101_1111, 0b0011_1111]
     utf8_3 = [0b1110_1111, 0b1011_1111, 0b0011_1111]
     utf8_4 = [0b1111_0111, 0b1011_1111, 0b1011_1111, 0b0011_1111]
-    err_2 = Err(BadUtf8({ index: 1, problem: ExpectedContinuation }))
-    # err_3 = Err(BadUtf8({ index: 2, problem: ExpectedContinuation }))
-    # err_4 = Err(BadUtf8({ index: 3, problem: ExpectedContinuation }))
+    err_2 = Err(BadUtf8({ index: 0, problem: ExpectedContinuation }))
+    err_3 = Err(BadUtf8({ index: 0, problem: ExpectedContinuation }))
+    err_4 = Err(BadUtf8({ index: 0, problem: ExpectedContinuation }))
     utf16_2 = utf8_to_utf16(utf8_2)
-    utf16_3 = utf8_to_utf16(utf8_3) |> Result.map_ok(|_| ShouldNotPass)
-    utf16_4 = utf8_to_utf16(utf8_4) |> Result.map_ok(|_| ShouldNotPass)
+    utf16_3 = utf8_to_utf16(utf8_3)
+    utf16_4 = utf8_to_utf16(utf8_4)
 
-    (utf16_2 == err_2)
-    # && (utf16_3 == err_3) # panics if uncommented
-    # && (utf16_4 == err_4) # panics if uncommented
-    && (utf16_3 != Ok ShouldNotPass)
-    && (utf16_4 != Ok ShouldNotPass)
+    (utf16_2 == err_2) && (utf16_3 == err_3) && (utf16_4 == err_4)
 
-    # && (Str.from_utf8(utf8_2) == Err(BadUtf8({ index: 1, problem: ExpectedContinuation })))
-
-# expect
-#     # Missing continuation bytes
-#     utf8_3 = [0b1110_1111, 0b1011_1111, 0b0011_1111]
-#     # utf8_4 = [0b1111_0111, 0b1011_1111, 0b1011_1111, 0b0011_1111]
-#     # err_2 = Err(BadUtf8({ index: 1, problem: ExpectedContinuation }))
-#     err_3 = Err(BadUtf8({ index: 2, problem: ExpectedContinuation }))
-#     # err_4 = Err(BadUtf8({ index: 3, problem: ExpectedContinuation }))
-#     utf16_3 = utf8_to_utf16(utf8_3) |> Result.map_ok(|_| ShouldNotPass)
-#     # utf16_4 = utf8_to_utf16(utf8_4) |> Result.map_ok(|_| ShouldNotPass)
-
-#     && (utf16_3 == err_3) # panics if uncommented
-#     # && (utf16_4 == err_4) # panics if uncommented
-#     && (utf16_3 != Ok ShouldNotPass)
-#     # && (utf16_4 != Ok ShouldNotPass)
+expect
+    # Same expected continuation behavior as Str.from_utf8 (including index)
+    utf8 =  [0b1111_0111, 0b1011_1111, 0b1011_1111, 0b0011_1111]
+    utf16_res = utf8_to_utf16(utf8) |> Result.map_ok(|_| NotOkay)
+    str_res = Str.from_utf8(utf8) |> Result.map_ok(|_| NotOkay)
+    utf16_res == str_res
 
 expect
     "🔥" |> str_to_utf16 |> Result.try(utf16_to_str) == Ok("🔥")
