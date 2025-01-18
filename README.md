@@ -2,6 +2,7 @@
 
 [![Roc-Lang][roc_badge]][roc_link]
 [![GitHub last commit][last_commit_badge]][last_commit_link]
+[![CI status][ci_status_badge]][ci_status_link]
 [![Latest release][version_badge]][version_link]
 <!-- [![CI status][ci_status_badge]][ci_status_link] -->
 
