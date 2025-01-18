@@ -33,7 +33,7 @@ utf8_to_utf16 = |utf8|
             state = Unsafe.unwrap(state_result, "Unreachable: state is always Ok")
             if state.skip_bytes > 0 then
                 Continue (Ok { state & skip_bytes: state.skip_bytes - 1 })
-            else if Num.bitwise_and(byte, 0xF0) == 0xF0 then
+            else if Num.bitwise_and(byte, 0xF8) == 0xF0 then
                 # 4 byte codedpoint
                 when (get_byte(index + 1), get_byte(index + 2), get_byte(index + 3)) is
                     (Ok byte2, Ok byte3, Ok byte4) ->
@@ -61,7 +61,7 @@ utf8_to_utf16 = |utf8|
                             Continue (Ok { state & utf16: List.join([state.utf16, [high_surrogate, low_surrogate]]), skip_bytes: 3 })
 
                     _ -> Break (Err (BadUtf8({ index, problem: UnexpectedEndOfSequence })))
-            else if Num.bitwise_and(byte, 0xE0) == 0xE0 then
+            else if Num.bitwise_and(byte, 0xF0) == 0xE0 then
                 # 3 byte codepoint
                 when (get_byte(index + 1), get_byte(index + 2)) is
                     (Ok byte2, Ok byte3) ->
@@ -78,7 +78,7 @@ utf8_to_utf16 = |utf8|
                         Continue (Ok { state & utf16: List.append(state.utf16, code_unit), skip_bytes: 2 })
 
                     _ -> Break (Err (BadUtf8({ index, problem: UnexpectedEndOfSequence })))
-            else if Num.bitwise_and(byte, 0xC0) == 0xC0 then
+            else if Num.bitwise_and(byte, 0xE0) == 0xC0 then
                 # 2 byte codepoint
                 when get_byte(index + 1) is
                     Ok byte2 if !valid_continuations([byte2]) ->
@@ -105,7 +105,7 @@ utf16_to_str : Utf16 -> Result Str [BadUtf16]
 utf16_to_str = |utf16|
     utf16
     |> utf16_to_utf8
-    |> Result.try(|utf8| Str.from_utf8(utf8) |> Result.map_err(|_| BadUtf16))
+    |> Result.try(|utf8| Str.from_utf8(utf8)) |> Result.map_err(|_| BadUtf16)
 
 utf16_to_utf8 : Utf16 -> Result Utf8 [BadUtf16]
 utf16_to_utf8 = |utf16|
@@ -236,13 +236,23 @@ expect
 # InvalidStartByte
 
 expect
-    # Invalid start byte - validate against Str.from_utf8
-    utf8 = [0b0100_0000, 0b1000_0000]
+    # Start with continuation - validate against Str.from_utf8
+    utf8 = [0b1000_0000]
     utf16_res = utf8_to_utf16(utf8) |> Result.map_ok(|_| ResultIsErr)
     str_res = Str.from_utf8(utf8) |> Result.map_ok(|_| ResultIsErr)
-    expected = Err(BadUtf8({ index: 1, problem: InvalidStartByte }))
+    expected = Err(BadUtf8({ index: 0, problem: InvalidStartByte }))
 
     (utf16_res == str_res) && (utf16_res == expected)
+
+expect
+    # Too many consecutive bits in prefix - validate against Str.from_utf8
+    utf8 = [0b1111_1000]
+    utf16_res = utf8_to_utf16(utf8) |> Result.map_ok(|_| ResultIsErr)
+    str_res = Str.from_utf8(utf8) |> Result.map_ok(|_| ResultIsErr)
+    expected = Err(BadUtf8({ index: 0, problem: InvalidStartByte }))
+
+    (utf16_res == str_res) && (utf16_res == expected)
+
 
 # -----------------------------------------------------------------------------
 # UnexpectedEndOfSequence
@@ -255,11 +265,15 @@ expect
     utf16_2_res = utf8_to_utf16(utf8_2) |> Result.map_ok(|_| ResultIsErr)
     utf16_3_res = utf8_to_utf16(utf8_3) |> Result.map_ok(|_| ResultIsErr)
     utf16_4_res = utf8_to_utf16(utf8_4) |> Result.map_ok(|_| ResultIsErr)
+    err_2 = Err(BadUtf8({ index: 0, problem: UnexpectedEndOfSequence }))
+    err_3 = Err(BadUtf8({ index: 0, problem: UnexpectedEndOfSequence }))
+    err_4 = Err(BadUtf8({ index: 0, problem: UnexpectedEndOfSequence }))
     str_2_res = Str.from_utf8(utf8_2) |> Result.map_ok(|_| ResultIsErr)
     str_3_res = Str.from_utf8(utf8_3) |> Result.map_ok(|_| ResultIsErr)
     str_4_res = Str.from_utf8(utf8_4) |> Result.map_ok(|_| ResultIsErr)
 
-    (utf16_2_res == str_2_res) && (utf16_3_res == str_3_res) && (utf16_4_res == str_4_res)
+    (utf16_2_res == err_2) && (utf16_3_res == err_3) && (utf16_4_res == err_4) &&
+    (utf16_2_res == str_2_res) && (utf16_3_res == str_3_res) && (utf16_4_res == str_4_res) 
 
 # -----------------------------------------------------------------------------
 # ExpectedContinuation
@@ -269,22 +283,27 @@ expect
     utf8_2 = [0b1101_1111, 0b0011_1111]
     utf8_3 = [0b1110_1111, 0b1011_1111, 0b0011_1111]
     utf8_4 = [0b1111_0111, 0b1011_1111, 0b1011_1111, 0b0011_1111]
+    utf16_2_res = utf8_to_utf16(utf8_2) |> Result.map_ok(|_| ResultIsErr)
+    utf16_3_res = utf8_to_utf16(utf8_3) |> Result.map_ok(|_| ResultIsErr)
+    utf16_4_res = utf8_to_utf16(utf8_4) |> Result.map_ok(|_| ResultIsErr)
     err_2 = Err(BadUtf8({ index: 0, problem: ExpectedContinuation }))
     err_3 = Err(BadUtf8({ index: 0, problem: ExpectedContinuation }))
     err_4 = Err(BadUtf8({ index: 0, problem: ExpectedContinuation }))
-    utf16_2 = utf8_to_utf16(utf8_2)
-    utf16_3 = utf8_to_utf16(utf8_3)
-    utf16_4 = utf8_to_utf16(utf8_4)
+    str_2_res = Str.from_utf8(utf8_2) |> Result.map_ok(|_| ResultIsErr)
+    str_3_res = Str.from_utf8(utf8_3) |> Result.map_ok(|_| ResultIsErr)
+    str_4_res = Str.from_utf8(utf8_4) |> Result.map_ok(|_| ResultIsErr)
 
-    (utf16_2 == err_2) && (utf16_3 == err_3) && (utf16_4 == err_4)
+    (utf16_2_res == err_2) && (utf16_3_res == err_3) && (utf16_4_res == err_4) &&
+    (utf16_2_res == str_2_res) && (utf16_3_res == str_3_res) && (utf16_4_res == str_4_res)
 
 expect
     # Validate missing expected continuation byte error index against Str.from_utf8
     utf8 = [0b1111_0111, 0b1011_1111, 0b1011_1111, 0b0011_1111]
     utf16_res = utf8_to_utf16(utf8) |> Result.map_ok(|_| ResultIsErr)
+    err = Err(BadUtf8({ index: 0, problem: ExpectedContinuation }))
     str_res = Str.from_utf8(utf8) |> Result.map_ok(|_| ResultIsErr)
 
-    utf16_res == str_res
+    (utf16_res == err) && (utf16_res == str_res)
 
 # -----------------------------------------------------------------------------
 # OverlongEncoding
@@ -313,12 +332,16 @@ expect
 # CodepointTooLarge
 
 expect
-    # Codepoint too large - validate against Str.from_utf8
-    utf8 = [0b1111_0100, 0b1000_0000, 0b1000_0000, 0b1000_0000]
+    # 0x110000 (0x10FFFF + 1) - validate against Str.from_utf8
+    utf8 = [0b1111_0100, 0b1001_0000, 0b1000_0000, 0b1000_0000]
     utf16_res = utf8_to_utf16(utf8) |> Result.map_ok(|_| ResultIsErr)
+    err = Err(BadUtf8({ index: 0, problem: CodepointTooLarge }))
     str_res = Str.from_utf8(utf8) |> Result.map_ok(|_| ResultIsErr)
 
-    utf16_res == str_res
+    (utf16_res == err) && 
+    (utf16_res == str_res)
+
+    # 0b1_0000_1111_1111_1111_1111
 
 # -----------------------------------------------------------------------------
 # EncodesSurrogateHalf
@@ -330,7 +353,4 @@ expect
     str_4_res = Str.from_utf8(utf8_4) |> Result.map_ok(|_| ResultIsErr)
     # err_4 = Err(BadUtf8({ index: 0, problem: EncodesSurrogateHalf }))
     # str_4_res == err_4 && # Str.from_utf8 does not check for surrogate half
-    utf16_res
-    == str_4_res
-    &&
-    Bool.true
+    (utf16_res == str_4_res)
