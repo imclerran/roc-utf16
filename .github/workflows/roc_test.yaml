@@ -26,4 +26,4 @@ jobs:
           roc-version: nightly
           testing: "true"
       - name: Test the library
-        run: roc test package/main.roc
+        run: roc test package/Tests.roc
