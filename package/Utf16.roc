@@ -92,25 +92,34 @@ from_utf8_with_bom = |utf8, endian|
     codepoints =
         try Utf8.to_codepoints(utf8)
     codepoints
-    |> List.map(from_codepoint)
+    |> List.map(|cp| from_codepoint_ordered(cp, endian))
     |> List.join
-    |> List.map(|b| if endian == Little then swap_bytes(b) else b)
     |> List.prepend(if endian == Little then 0xFFFE else 0xFEFF)
     |> Ok
 
 ## Convert a list of unicode codepoints to a list of Utf-16 code units.
 from_codepoints : List U32 -> List U16
-from_codepoints = |codepoints| codepoints |> List.map(from_codepoint) |> List.join |> List.map(swap_bytes)
+from_codepoints = |codepoints| 
+    codepoints 
+    |> List.map(|cp| from_codepoint_ordered(cp, Little)) 
+    |> List.join
 
 ## Convert a unicode codepoint to Utf-16.
-from_codepoint : U32 -> List U16
-from_codepoint = |codepoint|
+from_codepoint_ordered : U32, Endian -> List U16
+from_codepoint_ordered = |codepoint, endian|
     if codepoint <= 0xFFFF then
-        [Num.to_u16(codepoint)]
+        code_unit =
+            Num.to_u16(codepoint)
+            |> |cu| if endian == Little then swap_bytes(cu) else cu
+        [code_unit]
     else
         offset_codepoint = codepoint - 0x10000
-        high_surrogate = Num.to_u16(0xD800 + Num.shift_right_zf_by(offset_codepoint, 10))
-        low_surrogate = Num.to_u16(0xDC00 + Num.bitwise_and(offset_codepoint, 0x3FF))
+        high_surrogate = 
+            Num.to_u16(0xD800 + Num.shift_right_zf_by(offset_codepoint, 10))
+            |> |cu| if endian == Little then swap_bytes(cu) else cu
+        low_surrogate = 
+            Num.to_u16(0xDC00 + Num.bitwise_and(offset_codepoint, 0x3FF))
+            |> |cu| if endian == Little then swap_bytes(cu) else cu
         [high_surrogate, low_surrogate]
 
 ## Convert a list of Utf-16 codeunits to unicode codepoints.
