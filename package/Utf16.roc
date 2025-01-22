@@ -27,11 +27,11 @@ Endian : [Big, Little]
 from_str : Str -> Result (List U16) [BadUtf8 Utf8.Utf8Problem]
 from_str = |str| str |> Str.to_utf8 |> from_utf8
 
-## Convert a Str to Utf-16 using big-endian byte order.
+## Convert a Str to Utf-16 using little-endian byte order.
 from_str_le : Str -> Result (List U16) [BadUtf8 Utf8.Utf8Problem]
 from_str_le = |str| str |> Str.to_utf8 |> from_utf8_with_bom(Little)
 
-## Convert a Str to Utf-16 using little-endian byte order.
+## Convert a Str to Utf-16 using big-endian byte order.
 from_str_be : Str -> Result (List U16) [BadUtf8 Utf8.Utf8Problem]
 from_str_be = |str| str |> Str.to_utf8 |> from_utf8_with_bom(Big)
 
